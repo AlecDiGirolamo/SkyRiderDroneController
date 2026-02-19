@@ -47,7 +47,8 @@ packet[7] = (byte) 0x99;
 
 The control bytes represent the two joystick inputs. Byte1 represents roll, byte two is pitch, accelerator is throttle, and turn is yaw. In hover mode, the mode I mainly use, these are centered at 128. The user is allowed to trim these to prevent drift. 
 
-## Autonomous Control
+# Autonomous Control
+## Velocity Stabilization
 As a first step into autonomous control, I decided that finding the trim values for stable flight was an important step. There are multiple CV algorithms to choose from, but to start off I looked into the camera I have to work with. The images coming back are 640x480 with an approximately 75 degree field of view. You can't expect much from a $35 drone, and the noisiness of the image lends to its price as well. Here is an example frame taken from the drone at approximately 20 ft away from the doors.
 
 ![An example image from the drone.](README_imgs/snapshot.png)
@@ -113,20 +114,34 @@ The PID controller still needs tuning. I tried used what I found from my simulat
 
 The tuning is better, but it could be refined more. I also tested both algorithms during the day, when the light through the double doors blows out the camera sensors. While the drone still has objects in its field of view it could use for velocity estimation, the algorithms seem susceptible to both the blown out pixels and the camera changing ISO for the lighting conditions.
 
+
+## Position Stabilization
+I decided that to be able to do something productive with the software, I would really need to keep the drone at a stable position, and in all three axis. Velocity stabilization will only go so far when trying to land on a specific point. I decided to use an easy method for estimating drone position. I would use a checkerboard and opencv's findChessboardCorners method. This method is fast and reliable for a well defined checkerboard pattern in the camera's view. Luckily, the handdrawn sharpie-on-gridpaper checkerboard taped to a minifridge is well enough defined for opencv. This method limits the algorithm by requiring a checkerboard be in view, but is a good first step for getting good PID tuning.
+
+### Method
+The ```findChessboardCorners``` function finds interior corners of a checkerboard pattern. I obtained the pixel positions of the center of the checkerboard, and the total diagonol width of the checkerboard. I wanted the drone to keep the center of the checkerboard in the center of the camera's view, and for the drone to stay a given distance away from the checkerboard. I used a pinhole camera model to obtain the intrinsic matrix parameter for the camera, then used that to calculate the distance from the checkerboard and the horizontal/vertical offset of the drone from the center of the checkerboard. Note that for now, I'm only considering the case where the drone is facing directly at the checkerboard so I don't have to consider camera rotations.
+
+### First results
+Initially, the method looked promising. With some generic PID tuning techniques (just P, then I, then D), I was able to get consistent oscillation out of the drone. I thought that with enough tuning, I could get this to work. But something felt wrong. It should be a bit easier to tune than the difficulty I was experiencing. I knew I was likely fighting the drone's internal stabilization software, but I figured if the drone was stable enough, it wouldn't be fighting too hard against me. That's when I looked more closely at one of the PID outputs.
+
+![An image of the PID output and the calculated horizontal distance from center.](README_imgs/FightingTest.png)
+
+The blue plot shows the offset of the drone from the center of the checkerboard. The red plot shows the output of the PID controller. The vertical blue lines are to make seeing how the blue and red plots relate. The horizontal red lines are where things get interesting. Looking at the first vertical blue line, the plot shows that the drone is accelerating away from the target position. The red plot shows the PID increasingly telling the drone to start moving the opposite direction. We would expect that the blue line to slowly level off then start to return to the target. Instead we see that the drone suddenly changes direction. When does it suddenly change direction? Fairly consistently around +/- 15 on the joystick output. A deadzone. 
+
+I did testing to make sure this wasn't a fluke. In the keyboard control, I set the spacebar control authority to +/- 10. The drone showed no response on any axis. I then set the control authority to +/- 15. The drone showed significant authority (enough to know that 10 should be noticeable too). This means that the drone has internal control software that eliminates small joystick drifts. This is unexpected. In the reverse engineered code, there was a section for eliminating drift on one axis. Why only on one axis? Why does the app, which has perfect digital joysticks, need any joystick drift correction at all? If the controller that came with the drone has joystick drift, why doesn't it correct for drift instead of making the drone do it internally?
+
+### Current Results
+I am currently working on a better methods to correct this. My current approach is to program out the deadzone. Now instead of the PID simulating a joystick at 128 +/- PID output, it simulates a joystick at 128 +/- (13 + PID output). This means that drone, at low offsets, must still correct by a magnitude of at least 13. With a little PID tuning, this will keep the drone slightly stable with significant jitters.
+
+![A GIF showing the stabilization of the drone from an outside perspective](README_imgs/stabilized_phone.gif)
+
+![A GIF showing the stabilization of the drone from an outside perspective](README_imgs/stabilized_drone.gif)
+
 ## Next Steps
-### PID Tuning and Algorithm Generalization
-Befor moving on, it would be better if the drone has better tuning and more robustness against differing lighting conditions. While this is a good first step, the hardware will let me accomplish more if I can find the right methods. Namely, I first need to be able to stabilize the drone in the pitch axis.
-
-### Pitch Stabilization
-Being able to stabilize in the roll axis won't help me much if I can't also stabilize in the pitch axis. It is a more difficult problem to solve as it involves estimating the expansion and contraction of a scene in time. There are things I could do to mitigate this, such as trying to reposition the camera to point more downwards.
-
-### Ascent/Descent Stabilization
-The drone does a better job of stabilizing itself vertically, but it could be made better, especially if I have spare computational power.
-
-Trying to stabilize in three axes lends to the idea that I do need to estimate pose, and use the PID controller on the translation vector's components. Also, my next step will require position stabilization instead of velocity stabilization.
+The knowledge of the drone's deadzone will probably save me a great deal of headache in the future, but it might mean the PID controller is insufficient. One issue is that the y axis stabilization is very dependent on movements that correct the z axis stabilization. If I could make small z adjustments, the drone wont pitch forward/backward enough to significantly change the checkerboard position in the camera's view. But that isn't possible now. PID tuning may still work, but it may not be a sufficient solution anymore, especially knowing now that the drone behaves nonlinearly. After attempting a little more tuning, my next approach will be model predictive control (MPC).
 
 ### Autonomous Landing
-Repositioning the camera and stabilizing the drone's position can also help with a major milestone: getting the drone to land in a specific location. With a narrow field of view that faces forward, it would be hard to estimate the drone's position well enough to land on a target out of view. If I instead point the camera downwards enough to keep a landing target in view, I may just be able to land on it accurately.
+If I can get the drone stable enough to maintain +/- 6 in. on each axis, I should be able to get it to land in a specific location. If making the checkerboard smaller doesn't introduce too much noise, then reducing the size could make the checkerboard more local to the landing site, instead of having to place it far enough away so that the entire board fits in the camera view.
 
 
 # Software Usage
@@ -144,4 +159,6 @@ Once that thread is running, the user has the option for how to control the dron
 
 To reduce the control authority of the movement keys, hold space while using the movement keys. To trim each axis, hold enter and press the corresponding key.
 
-When the user presses P, it turns on autopilot. Autopilot uses the algorithm described above with a PID controller to minimize the drift in the roll axis. Pressing P again disables and resets the autopilot.
+When the user presses P, it turns on autopilot. Autopilot uses the algorithm described above with a PID controller to try to maintain the checkerboard position and size in the camera's view.
+
+There are now two options added in the main function to save the PID input and output data to a log file, and an option to save the drone's feed as a video.
